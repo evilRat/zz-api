@@ -1,3 +1,9 @@
+from flask.wrappers import Response
+
+
+from typing import Any, Literal
+
+
 from flask import request, jsonify
 from flask_restful import Resource
 import logging
@@ -20,8 +26,8 @@ class TradeOperations(Resource):
             operation = data.get('operation')
             operation_data = data.get('data', {})
             
-            # 模拟微信小程序的openid（实际项目中需要从认证中获取）
-            openid = request.headers.get('X-OpenID', 'test_openid')
+            # 从参数中获取微信小程序的openid（实际项目中需要从认证中获取）
+            openid = data.get('openId', 'test_openid')
             
             if operation == 'getAllTrades':
                 return self._get_all_trades(operation_data, openid)
@@ -58,7 +64,7 @@ class TradeOperations(Resource):
             skip = (page - 1) * page_size
             
             # 构建查询条件
-            query = {'_openid': openid}
+            query: dict[str, Any] = {'_openid': openid}
             
             if match_status and match_status != 'all':
                 query['matchStatus'] = match_status
@@ -71,7 +77,7 @@ class TradeOperations(Resource):
             
             # 执行分页查询
             trades = list(db.trades.find(query)
-                         .sort('date', -1)
+                         .sort('createTime', -1)
                          .skip(skip)
                          .limit(page_size))
             
@@ -183,7 +189,7 @@ class TradeOperations(Resource):
             
             # 查询记录
             trade = db.trades.find_one({
-                '_id': trade_id,
+                'id': trade_id,
                 '_openid': openid
             })
             
@@ -193,8 +199,6 @@ class TradeOperations(Resource):
                     'message': '交易记录不存在'
                 }), 404
             
-            # 将ObjectId转换为字符串
-            trade['_id'] = str(trade['_id'])
             
             return jsonify({
                 'success': True,

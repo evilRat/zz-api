@@ -1,3 +1,9 @@
+from flask.wrappers import Response
+
+
+from typing import Any, Literal
+
+
 from flask import request, jsonify
 from flask_restful import Resource
 import logging
@@ -20,15 +26,17 @@ class TBillOperations(Resource):
             operation = data.get('operation')
             operation_data = data.get('data', {})
             
-            # 模拟微信小程序的openid（实际项目中需要从认证中获取）
-            openid = request.headers.get('X-OpenID', 'test_openid')
+            # 从参数中获取微信小程序的openid（实际项目中需要从认证中获取）
+            openid = data.get('openId', 'test_openid')
             
             if operation == 'createTBill':
                 return self._create_tbill(operation_data, openid)
             elif operation == 'updateTBill':
                 return self._update_tbill(operation_data, openid)
-            elif operation == 'getTBillDetail':
+            elif operation == 'getTBillById':
                 return self._get_tbill_detail(operation_data, openid)
+            elif operation == 'getAllTBills':
+                return self._get_all_tbills(operation_data, openid)
             else:
                 return jsonify({
                     'success': False,
@@ -47,15 +55,14 @@ class TBillOperations(Resource):
         """创建T账单，使用事务确保数据一致性"""
         try:
             db = get_db()
-            a_trade_id = data.get('aTradeId')
-            b_trade_id = data.get('bTradeId')
+            openId = data.get('openId')
             date = data.get('date')
             
             # 参数验证
-            if not all([a_trade_id, b_trade_id, date]):
+            if not all([openId, date]):
                 return jsonify({
                     'success': False,
-                    'message': '缺少必要参数：aTradeId, bTradeId, date'
+                    'message': '缺少必要参数：openId, date'
                 }), 400
             
             # 开始事务（MongoDB 4.0+支持事务）
@@ -221,34 +228,62 @@ class TBillOperations(Resource):
                     'success': False,
                     'message': 'T账单不存在'
                 }), 404
-            
-            # 将ObjectId转换为字符串
-            tbill['_id'] = str(tbill['_id'])
-            
-            # 查询关联的交易记录
-            a_trade = db.trades.find_one({
-                '_id': tbill.get('aTradeId'),
-                '_openid': openid
-            })
-            b_trade = db.trades.find_one({
-                '_id': tbill.get('bTradeId'),
-                '_openid': openid
-            })
-            
-            if a_trade:
-                a_trade['_id'] = str(a_trade['_id'])
-            if b_trade:
-                b_trade['_id'] = str(b_trade['_id'])
+        
             
             return jsonify({
                 'success': True,
-                'data': {
-                    'tbill': tbill,
-                    'aTrade': a_trade,
-                    'bTrade': b_trade
-                }
+                'data': tbill
             })
         
         except Exception as e:
             logger.error(f'获取T账单详情失败: {str(e)}')
+            raise
+    
+    def _get_all_tbills(self, data, openid):
+        """根据openId获取所有T账单 - 支持分页和筛选"""
+        try:
+            db = get_db()
+            page = data.get('page', 1)
+            page_size = data.get('pageSize', 20)
+            stock_code = data.get('stockCode')
+            
+            skip = (page - 1) * page_size
+            
+            # 构建查询条件
+            query: dict[str, Any] = {'_openid': openid}
+            
+            if stock_code and stock_code != 'all':
+                query['stockCode'] = stock_code
+            
+            # 执行分页查询
+            tbills = list(db.tbills.find(query)
+                         .sort('date', -1)
+                         .skip(skip)
+                         .limit(page_size))
+            
+            # 获取总数
+            total = db.tbills.count_documents(query)
+            
+            # 将ObjectId转换为字符串
+            for tbill in tbills:
+                tbill['_id'] = str(tbill['_id'])
+                # 同时转换关联的交易记录ID
+                if 'aTradeId' in tbill:
+                    tbill['aTradeId'] = str(tbill['aTradeId'])
+                if 'bTradeId' in tbill:
+                    tbill['bTradeId'] = str(tbill['bTradeId'])
+            
+            return jsonify({
+                'success': True,
+                'data': tbills,
+                'pagination': {
+                    'page': page,
+                    'pageSize': page_size,
+                    'total': total,
+                    'hasMore': skip + len(tbills) < total
+                }
+            })
+        
+        except Exception as e:
+            logger.error(f'获取T账单列表失败: {str(e)}')
             raise

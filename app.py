@@ -15,10 +15,7 @@ app.config.from_object(__name__)
 # 配置JSON序列化
 app.config['JSON_SORT_KEYS'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json'
-app.config['RESTFUL_JSON'] = {
-    'ensure_ascii': False,  # 支持中文
-    'sort_keys': False      # 不排序键
-}
+app.json.ensure_ascii = False
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
