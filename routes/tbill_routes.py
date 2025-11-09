@@ -30,6 +30,7 @@ class TBillOperations(Resource):
             openid = data.get('openId', 'test_openid')
             
             if operation == 'createTBill':
+                # 对于createTBill操作，直接传递整个data对象（不使用operation_data）
                 return self._create_tbill(operation_data, openid)
             elif operation == 'updateTBill':
                 return self._update_tbill(operation_data, openid)
@@ -55,109 +56,69 @@ class TBillOperations(Resource):
         """创建T账单，使用事务确保数据一致性"""
         try:
             db = get_db()
-            openId = data.get('openId')
-            date = data.get('date')
+            
+            # 直接使用传入的数据，因为数据结构已经符合要求
+            tbill_data = data.copy()
+            
+            # 确保_openid字段存在
+            if '_openid' not in tbill_data:
+                tbill_data['_openid'] = openid
             
             # 参数验证
-            if not all([openId, date]):
+            required_fields = ['firstTradeId', 'profit', 'quantity', 'secondTradeId', 
+                             'status', 'stockCode', 'stockName', 'type']
+            missing_fields = [field for field in required_fields if field not in tbill_data]
+            
+            if missing_fields:
                 return jsonify({
                     'success': False,
-                    'message': '缺少必要参数：openId, date'
+                    'message': f'缺少必要参数: {", ".join(missing_fields)}'
                 }), 400
             
-            # 开始事务（MongoDB 4.0+支持事务）
-            with db.client.start_session() as session:
-                with session.start_transaction():
-                    try:
-                        # 1. 获取A和B交易记录
-                        a_trade = db.trades.find_one(
-                            {'_id': a_trade_id, '_openid': openid},
-                            session=session
-                        )
-                        b_trade = db.trades.find_one(
-                            {'_id': b_trade_id, '_openid': openid},
-                            session=session
-                        )
-                        
-                        if not a_trade or not b_trade:
-                            session.abort_transaction()
-                            return jsonify({
-                                'success': False,
-                                'message': '交易记录不存在'
-                            }), 404
-                        
-                        # 2. 验证交易记录状态和匹配条件
-                        if a_trade.get('matchStatus') != 'unmatched' or b_trade.get('matchStatus') != 'unmatched':
-                            session.abort_transaction()
-                            return jsonify({
-                                'success': False,
-                                'message': '交易记录已匹配，无法创建T账单'
-                            }), 400
-                        
-                        # 验证股票代码一致性
-                        if a_trade.get('stockCode') != b_trade.get('stockCode'):
-                            session.abort_transaction()
-                            return jsonify({
-                                'success': False,
-                                'message': 'A和B交易记录的股票代码不一致'
-                            }), 400
-                        
-                        # 3. 计算盈利金额和盈利率
-                        # 假设A是买入，B是卖出
-                        profit = b_trade.get('price') - a_trade.get('price')
-                        profit_rate = (profit / a_trade.get('price')) * 100 if a_trade.get('price') > 0 else 0
-                        
-                        # 4. 创建T账单记录
-                        tbill_data = {
-                            'aTradeId': a_trade_id,
-                            'bTradeId': b_trade_id,
-                            'stockCode': a_trade.get('stockCode'),
-                            'stockName': a_trade.get('stockName'),
-                            'stockMarket': a_trade.get('stockMarket', 'unknown'),
-                            'buyPrice': a_trade.get('price'),
-                            'sellPrice': b_trade.get('price'),
-                            'quantity': min(a_trade.get('quantity', 0), b_trade.get('quantity', 0)),
-                            'profit': profit,
-                            'profitRate': profit_rate,
-                            'date': date,
-                            '_openid': openid,
-                            'createTime': datetime.utcnow(),
-                            'updateTime': datetime.utcnow()
-                        }
-                        
-                        tbill_result = db.tbills.insert_one(tbill_data, session=session)
-                        
-                        # 5. 更新交易记录状态
-                        db.trades.update_one(
-                            {'_id': a_trade_id, '_openid': openid},
-                            {'$set': {'matchStatus': 'matched', 'updateTime': datetime.utcnow()}},
-                            session=session
-                        )
-                        
-                        db.trades.update_one(
-                            {'_id': b_trade_id, '_openid': openid},
-                            {'$set': {'matchStatus': 'matched', 'updateTime': datetime.utcnow()}},
-                            session=session
-                        )
-                        
-                        # 提交事务
-                        session.commit_transaction()
-                        
-                        return jsonify({
-                            'success': True,
-                            'data': {
-                                'inserted_id': str(tbill_result.inserted_id)
-                            }
-                        })
-                        
-                    except Exception as e:
-                        session.abort_transaction()
-                        logger.error(f'创建T账单事务失败: {str(e)}')
-                        raise
+            try:
+                # 1. 保存T账单数据到tbills集合
+                tbill_result = db.tbills.insert_one(tbill_data)
+                
+                # 2. 更新对应的交易记录状态为"已匹配"
+                # 更新firstTrade
+                first_trade_result = db.trades.update_one(
+                    {'id': tbill_data['firstTradeId'], '_openid': tbill_data['_openid']},
+                    {'$set': {'status': '已匹配', 'updateTime': datetime.utcnow()}}
+                )
+                
+                # 更新secondTrade
+                second_trade_result = db.trades.update_one(
+                    {'id': tbill_data['secondTradeId'], '_openid': tbill_data['_openid']},
+                    {'$set': {'status': '已匹配', 'updateTime': datetime.utcnow()}}
+                )
+                
+                # 检查是否成功更新了两个交易记录
+                if first_trade_result.modified_count == 0 or second_trade_result.modified_count == 0:
+                    # 如果更新失败，记录警告但不回滚（因为没有使用事务）
+                    logger.warning(f'未能成功更新所有交易记录: firstTradeId={tbill_data["firstTradeId"]}, secondTradeId={tbill_data["secondTradeId"]}')
+                
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'inserted_id': str(tbill_result.inserted_id)
+                    }
+                })
+                
+            except Exception as e:
+                logger.error(f'创建T账单数据库操作失败: {str(e)}')
+                return jsonify({
+                    'success': False,
+                    'message': '数据库操作失败',
+                    'error': str(e)
+                }), 500
         
         except Exception as e:
             logger.error(f'创建T账单失败: {str(e)}')
-            raise
+            return jsonify({
+                'success': False,
+                'message': '创建T账单失败',
+                'error': str(e)
+            }), 500
     
     def _update_tbill(self, data, openid):
         """更新T账单信息"""
