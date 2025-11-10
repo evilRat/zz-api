@@ -1,13 +1,11 @@
-from flask.wrappers import Response
-
-
 from typing import Any, Literal
-
+from flask.wrappers import Response
 
 from flask import request, jsonify
 from flask_restful import Resource
 import logging
 from utils.db import get_db
+from utils.id_generator import BusinessIdGenerator
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -117,8 +115,12 @@ class TradeOperations(Resource):
                         'message': f'缺少必要字段: {field}'
                     }), 400
             
+            # 生成唯一的交易ID
+            trade_id = BusinessIdGenerator.generate_trade_id(openid)
+            
             # 准备插入数据
             trade_data = {
+                '_id': trade_id,
                 **data,
                 '_openid': openid,
                 'matchStatus': 'unmatched',  # 默认状态为未匹配
@@ -189,7 +191,7 @@ class TradeOperations(Resource):
             
             # 查询记录
             trade = db.trades.find_one({
-                'id': trade_id,
+                '_id': trade_id,
                 '_openid': openid
             })
             

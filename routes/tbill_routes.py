@@ -1,13 +1,10 @@
 from flask.wrappers import Response
-
-
 from typing import Any, Literal
-
-
 from flask import request, jsonify
 from flask_restful import Resource
 import logging
 from utils.db import get_db
+from utils.id_generator import BusinessIdGenerator
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -59,6 +56,9 @@ class TBillOperations(Resource):
             
             # 直接使用传入的数据，因为数据结构已经符合要求
             tbill_data = data.copy()
+            
+            # 如果没有提供_id，则生成一个唯一的T账单ID
+            tbill_data['_id'] = BusinessIdGenerator.generate_tbill_id(openid)
             
             # 确保_openid字段存在
             if '_openid' not in tbill_data:
@@ -189,16 +189,49 @@ class TBillOperations(Resource):
                     'success': False,
                     'message': 'T账单不存在'
                 }), 404
-        
+            
+            # 根据firstTradeId和secondTradeId查询对应的交易记录
+            first_trade = None
+            second_trade = None
+            
+            if 'firstTradeId' in tbill:
+                first_trade = db.trades.find_one({
+                    '_id': tbill['firstTradeId'],
+                    '_openid': openid
+                })
+            if not first_trade:
+                return jsonify({
+                    'success': False,
+                    'message': '第一步交易不存在'
+                }), 404
+            
+            if 'secondTradeId' in tbill:
+                second_trade = db.trades.find_one({
+                    '_id': tbill['secondTradeId'],
+                    '_openid': openid
+                })
+            if not second_trade:
+                return jsonify({
+                    'success': False,
+                    'message': '第二步交易不存在'
+                }), 404
             
             return jsonify({
                 'success': True,
-                'data': tbill
+                'data': {
+                    **tbill,
+                    'firstTrade': first_trade,
+                    'secondTrade': second_trade
+                }
             })
         
         except Exception as e:
             logger.error(f'获取T账单详情失败: {str(e)}')
-            raise
+            return jsonify({
+                'success': False,
+                'message': '获取T账单详情失败',
+                'error': str(e)
+            }), 500
     
     def _get_all_tbills(self, data, openid):
         """根据openId获取所有T账单 - 支持分页和筛选"""
