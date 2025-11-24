@@ -15,7 +15,7 @@ app.config.from_object(__name__)
 # 配置JSON序列化
 app.config['JSON_SORT_KEYS'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json'
-app.json.ensure_ascii = False
+app.config['JSON_AS_ASCII'] = False
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -28,11 +28,59 @@ api = Api(app)
 from routes.trade_routes import TradeOperations
 from routes.tbill_routes import TBillOperations
 from routes.stock_routes import StockCodeLookupResource
+# 导入微信工具
+from utils.wechat_utils import WeChatAPI
 
 # 注册路由
 api.add_resource(TradeOperations, '/api/tradeOperations')
 api.add_resource(TBillOperations, '/api/tbillOperations')
 api.add_resource(StockCodeLookupResource, '/api/stockCodeLookup')
+
+# 微信登录获取openId接口
+@app.route('/api/getOpenId', methods=['POST'])
+def get_open_id():
+    """通过微信登录code获取用户openId"""
+    try:
+        # 获取请求数据
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'message': '请求数据不能为空'
+            }), 400
+        
+        # 获取微信登录code
+        code = data.get('code')
+        if not code:
+            return jsonify({
+                'success': False,
+                'message': '缺少code参数'
+            }), 400
+        
+        # 调用微信API获取openId
+        result = WeChatAPI.get_open_id(code)
+        if not result or not result.get('open_id'):
+            return jsonify({
+                'success': False,
+                'message': '获取openId失败'
+            }), 500
+        
+        # 返回openId给前端
+        return jsonify({
+            'success': True,
+            'data': {
+                'openId': result['open_id'],
+                'unionId': result.get('union_id')
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f'获取openId接口异常: {str(e)}')
+        return jsonify({
+            'success': False,
+            'message': '服务器内部错误',
+            'error': str(e)
+        }), 500
 
 # 健康检查接口
 @app.route('/health', methods=['GET'])

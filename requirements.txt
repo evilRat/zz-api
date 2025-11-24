@@ -3,3 +3,4 @@ flask-restful
 pymongo
 grequests
 python-dotenv
+requests
