@@ -1,8 +1,6 @@
-from typing import Any, Literal
-from flask.wrappers import Response
-
-from flask import request, jsonify
-from flask_restful import Resource
+from typing import Any
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
 import logging
 from utils.db import get_db
 from utils.id_generator import BusinessIdGenerator
@@ -10,203 +8,190 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-class TradeOperations(Resource):
-    def post(self):
-        """处理交易操作请求"""
-        try:
-            data = request.get_json()
-            if not data:
-                return jsonify({
-                    'success': False,
-                    'message': '请求数据不能为空'
-                }), 400
-            
-            operation = data.get('operation')
-            operation_data = data.get('data', {})
-            
-            # 从参数中获取微信小程序的openid（实际项目中需要从认证中获取）
-            openid = data.get('openId', 'test_openid')
-            
-            if operation == 'getAllTrades':
-                return self._get_all_trades(operation_data, openid)
-            elif operation == 'addTrade':
-                return self._add_trade(operation_data, openid)
-            elif operation == 'deleteTrade':
-                return self._delete_trade(operation_data, openid)
-            elif operation == 'getTradeById':
-                return self._get_trade_by_id(operation_data, openid)
-            else:
-                return jsonify({
-                    'success': False,
-                    'message': '不支持的操作类型'
-                }), 400
-        
-        except Exception as e:
-            logger.error(f'交易操作失败: {str(e)}')
-            return jsonify({
-                'success': False,
-                'message': '操作失败',
-                'error': str(e)
-            }), 500
+# 定义请求/响应模型
+class TradeRequest(BaseModel):
+    operation: str
+    data: dict = Field(default_factory=dict)
+    openId: str = 'test_openid'
+
+class TradeResponse(BaseModel):
+    success: bool
+    data: Any = None
+    message: str = None
+    pagination: Any = None
+
+# 创建路由
+router = APIRouter(prefix='/api', tags=['trades'])
+
+@router.post('/tradeOperations')
+async def trade_operations(req: TradeRequest):
+    """处理交易操作请求"""
+    try:
+        if req.operation == 'getAllTrades':
+            return await _get_all_trades(req.data, req.openId)
+        elif req.operation == 'addTrade':
+            return await _add_trade(req.data, req.openId)
+        elif req.operation == 'deleteTrade':
+            return await _delete_trade(req.data, req.openId)
+        elif req.operation == 'getTradeById':
+            return await _get_trade_by_id(req.data, req.openId)
+        else:
+            raise HTTPException(status_code=400, detail='不支持的操作类型')
     
-    def _get_all_trades(self, data, openid):
-        """获取所有交易记录 - 支持分页和筛选"""
-        try:
-            db = get_db()
-            page = data.get('page', 1)
-            page_size = data.get('pageSize', 20)
-            match_status = data.get('matchStatus')
-            stock_code = data.get('stockCode')
-            type = data.get('type')
-            
-            skip = (page - 1) * page_size
-            
-            # 构建查询条件
-            query: dict[str, Any] = {'_openid': openid}
-            
-            if match_status and match_status != 'all':
-                query['matchStatus'] = match_status
-            
-            if stock_code and stock_code != 'all':
-                query['stockCode'] = stock_code
-            
-            if type and type != 'all':
-                query['type'] = type
-            
-            # 执行分页查询
-            trades = list(db.trades.find(query)
-                         .sort('createTime', -1)
-                         .skip(skip)
-                         .limit(page_size))
-            
-            # 获取总数
-            total = db.trades.count_documents(query)
-            
-            # 将ObjectId转换为字符串
-            for trade in trades:
-                trade['_id'] = str(trade['_id'])
-            
-            return jsonify({
-                'success': True,
-                'data': trades,
-                'pagination': {
-                    'page': page,
-                    'pageSize': page_size,
-                    'total': total,
-                    'hasMore': skip + len(trades) < total
-                }
-            })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'交易操作失败: {str(e)}')
+        raise HTTPException(status_code=500, detail=f'操作失败: {str(e)}')
+
+async def _get_all_trades(data: dict, openid: str):
+    """获取所有交易记录 - 支持分页和筛选"""
+    try:
+        db = get_db()
+        page = data.get('page', 1)
+        page_size = data.get('pageSize', 20)
+        match_status = data.get('matchStatus')
+        stock_code = data.get('stockCode')
+        trade_type = data.get('type')
         
-        except Exception as e:
-            logger.error(f'获取交易记录失败: {str(e)}')
-            raise
-    
-    def _add_trade(self, data, openid):
-        """添加新交易记录"""
-        try:
-            db = get_db()
-            
-            # 验证必要字段
-            required_fields = ['date', 'stockCode', 'stockName', 'type', 'price', 'quantity']
-            for field in required_fields:
-                if field not in data:
-                    return jsonify({
-                        'success': False,
-                        'message': f'缺少必要字段: {field}'
-                    }), 400
-            
-            # 生成唯一的交易ID
-            trade_id = BusinessIdGenerator.generate_trade_id(openid)
-            
-            # 准备插入数据
-            trade_data = {
-                '_id': trade_id,
-                **data,
-                '_openid': openid,
-                'matchStatus': 'unmatched',  # 默认状态为未匹配
-                'createTime': datetime.utcnow(),
-                'updateTime': datetime.utcnow()
+        skip = (page - 1) * page_size
+        
+        # 构建查询条件
+        query: dict[str, Any] = {'_openid': openid}
+        
+        if match_status and match_status != 'all':
+            query['matchStatus'] = match_status
+        
+        if stock_code and stock_code != 'all':
+            query['stockCode'] = stock_code
+        
+        if trade_type and trade_type != 'all':
+            query['type'] = trade_type
+        
+        # 异步执行分页查询
+        trades = await db.trades.find(query).sort('createTime', -1).skip(skip).limit(page_size).to_list(length=None)
+        
+        # 获取总数
+        total = await db.trades.count_documents(query)
+        
+        # 将ObjectId转换为字符串
+        for trade in trades:
+            trade['_id'] = str(trade['_id'])
+        
+        return {
+            'success': True,
+            'data': trades,
+            'pagination': {
+                'page': page,
+                'pageSize': page_size,
+                'total': total,
+                'hasMore': skip + len(trades) < total
             }
-            
-            # 插入数据
-            result = db.trades.insert_one(trade_data)
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'inserted_id': str(result.inserted_id)
-                }
-            })
-        
-        except Exception as e:
-            logger.error(f'添加交易记录失败: {str(e)}')
-            raise
+        }
     
-    def _delete_trade(self, data, openid):
-        """删除交易记录"""
-        try:
-            db = get_db()
-            trade_id = data.get('tradeId')
-            
-            if not trade_id:
-                return jsonify({
-                    'success': False,
-                    'message': '缺少tradeId参数'
-                }), 400
-            
-            # 执行删除
-            result = db.trades.delete_one({
-                '_id': trade_id,
-                '_openid': openid
-            })
-            
-            if result.deleted_count == 0:
-                return jsonify({
-                    'success': False,
-                    'message': '交易记录不存在或无权限删除'
-                }), 404
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'deleted_count': result.deleted_count
-                }
-            })
+    except Exception as e:
+        logger.error(f'获取交易记录失败: {str(e)}')
+        raise HTTPException(status_code=500, detail=f'获取交易记录失败: {str(e)}')
+
+async def _add_trade(data: dict, openid: str):
+    """添加新交易记录"""
+    try:
+        db = get_db()
         
-        except Exception as e:
-            logger.error(f'删除交易记录失败: {str(e)}')
-            raise
+        # 验证必要字段
+        required_fields = ['date', 'stockCode', 'stockName', 'type', 'price', 'quantity']
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f'缺少必要字段: {field}')
+        
+        # 生成唯一的交易ID
+        trade_id = BusinessIdGenerator.generate_trade_id(openid)
+        
+        # 准备插入数据
+        trade_data = {
+            '_id': trade_id,
+            **data,
+            '_openid': openid,
+            'matchStatus': 'unmatched',  # 默认状态为未匹配
+            'createTime': datetime.utcnow(),
+            'updateTime': datetime.utcnow()
+        }
+        
+        # 异步插入数据
+        result = await db.trades.insert_one(trade_data)
+        
+        return {
+            'success': True,
+            'data': {
+                'inserted_id': str(result.inserted_id)
+            }
+        }
     
-    def _get_trade_by_id(self, data, openid):
-        """根据ID获取交易记录"""
-        try:
-            db = get_db()
-            trade_id = data.get('tradeId')
-            
-            if not trade_id:
-                return jsonify({
-                    'success': False,
-                    'message': '缺少tradeId参数'
-                }), 400
-            
-            # 查询记录
-            trade = db.trades.find_one({
-                '_id': trade_id,
-                '_openid': openid
-            })
-            
-            if not trade:
-                return jsonify({
-                    'success': False,
-                    'message': '交易记录不存在'
-                }), 404
-            
-            
-            return jsonify({
-                'success': True,
-                'data': trade
-            })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'添加交易记录失败: {str(e)}')
+        raise HTTPException(status_code=500, detail=f'添加交易记录失败: {str(e)}')
+
+async def _delete_trade(data: dict, openid: str):
+    """删除交易记录"""
+    try:
+        db = get_db()
+        trade_id = data.get('tradeId')
         
-        except Exception as e:
-            logger.error(f'获取交易记录失败: {str(e)}')
-            raise
+        if not trade_id:
+            raise HTTPException(status_code=400, detail='缺少tradeId参数')
+        
+        # 异步执行删除
+        result = await db.trades.delete_one({
+            '_id': trade_id,
+            '_openid': openid
+        })
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail='交易记录不存在或无权限删除')
+        
+        return {
+            'success': True,
+            'data': {
+                'deleted_count': result.deleted_count
+            }
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'删除交易记录失败: {str(e)}')
+        raise HTTPException(status_code=500, detail=f'删除交易记录失败: {str(e)}')
+
+async def _get_trade_by_id(data: dict, openid: str):
+    """根据ID获取交易记录"""
+    try:
+        db = get_db()
+        trade_id = data.get('tradeId')
+        
+        if not trade_id:
+            raise HTTPException(status_code=400, detail='缺少tradeId参数')
+        
+        # 异步查询记录
+        trade = await db.trades.find_one({
+            '_id': trade_id,
+            '_openid': openid
+        })
+        
+        if not trade:
+            raise HTTPException(status_code=404, detail='交易记录不存在')
+        
+        # 转换ObjectId为字符串
+        trade['_id'] = str(trade['_id'])
+        
+        return {
+            'success': True,
+            'data': trade
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'获取交易记录失败: {str(e)}')
+        raise HTTPException(status_code=500, detail=f'获取交易记录失败: {str(e)}')

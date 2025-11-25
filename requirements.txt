@@ -1,6 +1,6 @@
-flask
-flask-restful
-pymongo
-grequests
+fastapi
+uvicorn[standard]
+motor
+httpx
 python-dotenv
-requests
+pydantic

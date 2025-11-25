@@ -1,4 +1,4 @@
-from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 
@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)
 client = None
 db = None
 
-def get_db():
-    """获取数据库连接"""
+async def init_db():
+    """初始化异步数据库连接"""
     global client, db
     
     if db is None:
@@ -39,24 +39,30 @@ def get_db():
                     parsed_uri.fragment
                 ))
                 
-                client = MongoClient(authenticated_uri)
+                client = AsyncIOMotorClient(authenticated_uri)
             else:
                 # 使用原始URI连接（无认证）
-                client = MongoClient(mongo_uri)
+                client = AsyncIOMotorClient(mongo_uri)
             
             db = client.get_default_database()
             # 测试连接
-            db.command('ping')
-            logger.info('MongoDB连接成功')
+            await db.command('ping')
+            logger.info('MongoDB异步连接成功')
         except Exception as e:
             logger.error(f'MongoDB连接失败: {str(e)}')
             raise
     
     return db
 
-def close_db():
+def get_db():
+    """获取数据库连接实例"""
+    if db is None:
+        raise RuntimeError('Database not initialized. Call init_db() first.')
+    return db
+
+async def close_db():
     """关闭数据库连接"""
     global client
     if client:
         client.close()
-        logger.info('MongoDB连接已关闭')
+        logger.info('MongoDB异步连接已关闭')

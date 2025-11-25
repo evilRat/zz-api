@@ -1,132 +1,128 @@
-from flask import Flask, request, jsonify
-from flask_restful import Api, Resource
-from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import os
 import logging
-import json
+from dotenv import load_dotenv
+from pydantic import BaseModel
 
 # 加载环境变量
 load_dotenv()
-
-# 初始化Flask应用
-app = Flask(__name__)
-app.config.from_object(__name__)
-
-# 配置JSON序列化
-app.config['JSON_SORT_KEYS'] = False
-app.config['JSONIFY_MIMETYPE'] = 'application/json'
-app.config['JSON_AS_ASCII'] = False
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 初始化API
-api = Api(app)
-
-# 导入路由模块
-from routes.trade_routes import TradeOperations
-from routes.tbill_routes import TBillOperations
-from routes.stock_routes import StockCodeLookupResource
-# 导入微信工具
+# 导入数据库和路由
+from utils.db import init_db, close_db, get_db
 from utils.wechat_utils import WeChatAPI
+from routes.trade_routes import router as trade_router
+from routes.tbill_routes import router as tbill_router
+from routes.stock_routes import router as stock_router
+
+# 定义应用生命周期
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动：初始化数据库
+    logger.info('应用启动，初始化数据库...')
+    await init_db()
+    yield
+    # 关闭：关闭数据库连接
+    logger.info('应用关闭，关闭数据库连接...')
+    await close_db()
+
+# 创建FastAPI应用
+app = FastAPI(
+    title='Stock Trading API',
+    description='Stock Trading & T-Bill Management REST API',
+    version='2.0.0',
+    lifespan=lifespan
+)
+
+# 添加CORS中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
 # 注册路由
-api.add_resource(TradeOperations, '/api/tradeOperations')
-api.add_resource(TBillOperations, '/api/tbillOperations')
-api.add_resource(StockCodeLookupResource, '/api/stockCodeLookup')
+app.include_router(trade_router)
+app.include_router(tbill_router)
+app.include_router(stock_router)
+
+# 定义请求模型
+class OpenIdRequest(BaseModel):
+    code: str
+
+# 健康检查接口
+@app.get('/health')
+async def health_check():
+    """健康检查接口"""
+    return {
+        'status': 'ok',
+        'message': 'API服务运行正常'
+    }
 
 # 微信登录获取openId接口
-@app.route('/api/getOpenId', methods=['POST'])
-def get_open_id():
+@app.post('/api/getOpenId')
+async def get_open_id(req: OpenIdRequest):
     """通过微信登录code获取用户openId"""
     try:
-        # 获取请求数据
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                'success': False,
-                'message': '请求数据不能为空'
-            }), 400
+        if not req.code:
+            raise HTTPException(status_code=400, detail='缺少code参数')
         
-        # 获取微信登录code
-        code = data.get('code')
-        if not code:
-            return jsonify({
-                'success': False,
-                'message': '缺少code参数'
-            }), 400
-        
-        # 调用微信API获取openId
-        result = WeChatAPI.get_open_id(code)
+        # 调用异步微信API获取openId
+        result = await WeChatAPI.get_open_id(req.code)
         if not result or not result.get('open_id'):
-            return jsonify({
-                'success': False,
-                'message': '获取openId失败'
-            }), 500
+            raise HTTPException(status_code=500, detail='获取openId失败')
         
         # 返回openId给前端
-        return jsonify({
+        return {
             'success': True,
             'data': {
                 'openId': result['open_id'],
                 'unionId': result.get('union_id')
             }
-        })
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f'获取openId接口异常: {str(e)}')
-        return jsonify({
+        raise HTTPException(status_code=500, detail=f'服务器内部错误: {str(e)}')
+
+# 自定义异常处理
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    """统一处理HTTP异常"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            'success': False,
+            'message': exc.detail,
+            'error': str(exc.detail)
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """统一处理未捕获异常"""
+    logger.error(f'未捕获异常: {str(exc)}')
+    return JSONResponse(
+        status_code=500,
+        content={
             'success': False,
             'message': '服务器内部错误',
-            'error': str(e)
-        }), 500
-
-# 健康检查接口
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'ok',
-        'message': 'API服务运行正常'
-    })
-
-# CORS中间件
-@app.after_request
-def after_request(response):
-    response.headers.set('Access-Control-Allow-Origin', '*')
-    response.headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
-    return response
-
-# 统一错误处理
-@app.errorhandler(404)
-def not_found(error):
-    return {
-        'success': False,
-        'message': '接口不存在'
-    }, 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    error_msg = str(error)
-    logger.error(f'内部错误: {error_msg}')
-    return {
-        'success': False,
-        'message': '服务器内部错误',
-        'error': error_msg
-    }, 500
-
-# 处理JSON序列化错误
-@app.errorhandler(TypeError)
-def handle_type_error(error):
-    error_msg = str(error)
-    logger.error(f'类型错误: {error_msg}')
-    return {
-        'success': False,
-        'message': '数据序列化错误',
-        'error': error_msg
-    }, 500
+            'error': str(exc)
+        }
+    )
 
 if __name__ == '__main__':
+    import uvicorn
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=os.environ.get('DEBUG') == 'True')
+    debug = os.environ.get('DEBUG') == 'True'
+    uvicorn.run('app:app', host='0.0.0.0', port=port, reload=debug)

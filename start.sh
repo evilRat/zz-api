@@ -16,9 +16,9 @@ echo "安装依赖包..."
 pip install -r requirements.txt
 
 # 启动服务
-echo "启动RESTful服务..."
+echo "启动 FastAPI 异步服务..."
 if [ -f ".env" ]; then
     export $(cat .env | grep -v '^#' | xargs)
 fi
 
-python app.py
+uvicorn app:app --host 0.0.0.0 --port 5000 --reload

@@ -1,4 +1,4 @@
-import requests
+import httpx
 import os
 import logging
 from typing import Optional, Dict, Any
@@ -13,8 +13,8 @@ class WeChatAPI:
     BASE_URL = "https://api.weixin.qq.com/sns/jscode2session"
     
     @staticmethod
-    def get_open_id(code: str) -> Optional[Dict[str, Any]]:
-        """通过微信登录code获取用户openId
+    async def get_open_id(code: str) -> Optional[Dict[str, Any]]:
+        """通过微信登录code获取用户openId (异步)
         
         Args:
             code: 微信登录时获取的code
@@ -39,26 +39,27 @@ class WeChatAPI:
                 'grant_type': 'authorization_code'
             }
             
-            # 发送请求到微信API
-            response = requests.get(WeChatAPI.BASE_URL, params=params, timeout=10)
-            response.raise_for_status()
+            # 使用异步HTTP客户端发送请求到微信API
+            async with httpx.AsyncClient() as client:
+                response = await client.get(WeChatAPI.BASE_URL, params=params, timeout=10)
+                response.raise_for_status()
+                
+                # 解析响应
+                data = response.json()
+                
+                # 检查是否有错误
+                if 'errcode' in data and data['errcode'] != 0:
+                    logger.error(f"微信API错误: errcode={data['errcode']}, errmsg={data['errmsg']}")
+                    return None
+                
+                # 返回成功结果
+                return {
+                    'open_id': data.get('openid'),
+                    'session_key': data.get('session_key'),
+                    'union_id': data.get('unionid')
+                }
             
-            # 解析响应
-            data = response.json()
-            
-            # 检查是否有错误
-            if 'errcode' in data and data['errcode'] != 0:
-                logger.error(f"微信API错误: errcode={data['errcode']}, errmsg={data['errmsg']}")
-                return None
-            
-            # 返回成功结果
-            return {
-                'open_id': data.get('openid'),
-                'session_key': data.get('session_key'),
-                'union_id': data.get('unionid')
-            }
-            
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.error(f"请求微信API失败: {str(e)}")
             return None
         except Exception as e:
